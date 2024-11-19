@@ -1,3 +1,5 @@
+# from this colab notebook and huggingface examples https://colab.research.google.com/github/NielsRogge/Transformers-Tutorials/blob/master/BERT/Fine_tuning_BERT_(and_friends)_for_multi_label_text_classification.ipynb
+
 import os
 import pandas as pd 
 import numpy as np
