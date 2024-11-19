@@ -1,5 +1,4 @@
 from typing import List, Optional
-import os
 import re
 import math
 import json
@@ -14,7 +13,17 @@ def process_fewshot_answers(
         col_names: List[str],
         gen_answers: Optional[dict] = None
         ) -> List:
-    
+    """
+    Saves llm answers to file.
+    Params:
+        answers_unclean: answers generated from llm
+        out_dir: where to save the processed answers
+        filename: name for processed answers file
+        col_names: categories answered
+        gen_answers: if adding to previous set of answers
+    Returns:
+        Any unprocessed uids
+    """
     if gen_answers:
         few_shot_processed_dict = gen_answers
     else:
@@ -48,68 +57,63 @@ def process_fewshot_answers(
     return unprocessed
 
 
-def multi_f1_binary(preds: np.ndarray, actuals: np.ndarray) -> float:
-
-    per_task_f1 = []
-    for a, p in zip(actuals, preds):
-        per_task_f1.append(f1_score(a, p, average="micro"))
-    
-    return np.sum(per_task_f1) / len(per_task_f1)
-
-def calc_binary_f1(gen_answers_dict: dict, 
-                   actual_answers_df: pd.DataFrame, 
-                   return_separate: bool=False):
-    
-    # could just do a merge / join on uid for the two dataframes
-    # then fix the gen answer cols using apply
-    fk = next(iter(gen_df))
-    columns = list(gen_df[fk])
+def calc_score(
+        gen_answers_dict: dict, 
+        actual_answers_df: pd.DataFrame, 
+        return_separate: bool = False
+        ):
+    """
+    Calculates F1 score in aggregate for all labels, binary and multi-category.
+    Params:
+        gen_answers_dict: processed answers from llm
+        actual_answers_df: true answers in df form w/ uids
+        return_separate: to return label and individual score
+    Returns:
+        final score
+    """
+    fk = next(iter(gen_answers_dict))
+    columns = list(gen_answers_dict[fk])
     num_cols = len(columns)
-    
-    gen_df = pd.DataFrame(gen_answers_dict).T
-    actual_answers_df = actual_answers_df.set_index("uid")
-    subset_answers = actual_answers_df.loc[:, columns]
+    d = {c: {'actual': [], 'pred': []} for c in columns}
+    for k, v in gen_answers_dict.items():
+        actual = actual_answers_df[actual_answers_df['uid'] == k]
+        for sk, sv in v.items():
+            act_ans = actual[sk].values[0]
+            d[sk]['actual'].append(act_ans)
+            if sk not in ('WeaponType1', 'InjuryLocationType'):
+                if math.isnan(sv) | sv not in (0,1):
+                    d[sk]['pred'].append(int(not bool(act_ans)))
+                else:
+                    d[sk]['pred'].append(sv)
+            elif sk == 'WeaponType1':
+                if math.isnan(sv) | sv < 1 | sv > 12:
+                    d[sk]['pred'].append(sv+1)
+                else:
+                    d[sk]['pred'].append(sv)
+            else:
+                if math.isnan(sv) | sv < 1 | sv > 6:
+                    d[sk]['pred'].append(sv+1)
+                else:
+                    d[sk]['pred'].append(sv)
 
-    answer_matrix = [tuple() for _ in range(num_cols*2)]
-
-    for row in gen_df.itertuples():
-        uid = row.Index
-        answer = subset_answers[subset_answers.index == uid]
-        for c in range(len(columns)):
-            col = columns[c]
-            ans = answer[col].values[0]
-            answer_matrix[c+1] = answer_matrix[c+1] + (ans,)
-            gen_ans = row[c+1]
-            if col not in ("InjuryLocationType", "WeaponType1"):
-                if (gen_ans > 1) | (math.isnan(gen_ans)):
-                    answer_matrix[c] = answer_matrix[c] + (int(not bool(ans)),)
-                else:
-                    answer_matrix[c] = answer_matrix[c] + (gen_ans,)
-            elif col == "InjuryLocationType":
-                if (gen_ans > 6) | (gen_ans < 1) | (math.isnan(gen_ans)):
-                    answer_matrix[c] = answer_matrix[c] + (ans+1,)
-                else:
-                    answer_matrix[c] = answer_matrix[c] + (gen_ans,)
-            elif col == "WeaponType1":
-                if (gen_ans > 12) | (gen_ans < 1) | (math.isnan(gen_ans)):
-                    answer_matrix[c] = answer_matrix[c] + (ans+1,)
-                else:
-                    answer_matrix[c] = answer_matrix[c] + (gen_ans,)
-    
+    score_dict = {}
     scores = []
-    for i in range(num_cols):
-        actuals = np.array(answer_matrix[i])
-        gens = np.array(answer_matrix[i+1])
-        if len(np.unique(actuals)) > 2:
-            actuals = acutals - 1
-            gens = gens - 1
-            scores.append(f1_score(actuals, preds, average='micro'))
+    for k, v in d.items():
+        a = np.array(v['actual'])
+        p = np.array(v['pred'])
+        if len(np.unique(a)) > 2:
+            s = f1_score(a, p, average='micro')
         else:
-            scores.append(f1_score(actuals, gens), average='binary')
-    mv_f1 = sum(scores) / len(scores)
-    assert (mv_f1 <= 1) & (mv_f1 >= 0), f"Multi F1 incorrect {mv_f1}"
+            s = f1_score(a, p, average='binary')
+        scores.append(s)
+        score_dict[k] = s
 
+    overall_score = sum(scores) / len(scores)
     if return_separate:
-        return mv_f1, answer_matrix, columns
+        return overall_score, score_dict
+    return overall_score
+    
 
-    return mv_f1
+if __name__ == "__main__":
+
+    print('Script that cleans llm answers.')

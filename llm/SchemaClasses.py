@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 location_map = {1: "House, apartment",
         2: "Motor vehicle (excluding school bus and public transportation)",
@@ -92,6 +92,6 @@ class AllSchema(BaseModel):
     DisclosedToIntimatePartner: int
     DisclosedToOtherFamilyMember: int
     DisclosedToFriend: int
-    InjuryLocationType: int
-    WeaponType1: int
+    # InjuryLocationType: int
+    # WeaponType1: int
 

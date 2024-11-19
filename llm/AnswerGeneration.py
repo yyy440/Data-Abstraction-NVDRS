@@ -5,8 +5,8 @@ import gc
 
 import torch
 from accelerate import Accelerator
-from transformers import (AutoModel, AutoTokenizer,AutoModelForCausalLM, pipeline, 
-                          GenerationConfig, BitsAndBytesConfig)
+from transformers import (AutoTokenizer,AutoModelForCausalLM, pipeline, 
+                          BitsAndBytesConfig)
 
 from langchain_core.prompts import PromptTemplate, FewShotPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser
@@ -15,23 +15,29 @@ from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint, HuggingF
 import TorchDSClasses as ds
 import PromptTemplates as ptemps
 
-pipeline_kwargs = {"max_new_tokens":200,
+pipeline_kwargs = {"max_new_tokens":50,
                    "device":"cuda",
                    "temperature": 0.1,
                   "top_k": 1}
 
 def get_examples(uid: str, 
-                 column_names: list[str], 
-                 top_k: int, 
-                 similarity_df: pd.DataFrame,
-                 features_df: pd.DataFrame, 
-                 labels_df: pd.DataFrame) -> list[dict]:
+        column_names: list[str], 
+        top_k: int, 
+        similarity_df: pd.DataFrame,
+        features_df: pd.DataFrame, 
+        labels_df: pd.DataFrame
+        ) -> list[dict]:
 
     '''
     Get top k examples formatted as list of dicts for FewShotTemplate
     Params:
         uid: str to pull examples for
-    Return: list of dicts for prompt
+        column_names: categories to answer
+        top_k: num examples
+        similarity_df: top most similar examples
+        features_df: text passages
+        labels_df: answers
+    Return: formatted examples
     '''
     num_labels = len(column_names)
     sim_row = similarity_df[similarity_df["uid"] == uid].drop("uid", axis=1)
@@ -77,12 +83,21 @@ def get_examples(uid: str,
     
     return formatted_examples
 
-def gen_prompt_kwargs(schema, prefix, examples):
+def gen_prompt_kwargs(schema, 
+        prefix: str,
+        examples: dict):
+    """
+    Create prompt for langchain few shot template.
+    Params:
+        schema: pydantic schema
+        prefix: text of questions
+        examples: cosine similar examples
+    Returns:
+        dict for template and parser for schema
+    """
     
     parser = PydanticOutputParser(pydantic_object=schema)
-    prefix_temp = PromptTemplate(template=prefix
-                                 #,partial_variables={"format_instructions": parser.get_format_instructions()}
-                                          )
+    prefix_temp = PromptTemplate(template=prefix)
     prefix_temp = prefix_temp.format()
     prompt_kwargs = {"examples": examples, #dynamic
                     "example_prompt":ptemps.example_prompt, # static
@@ -106,14 +121,28 @@ def langchain_fewshot_answers(top_k: int,
                         pipeline_kwargs: dict,
                         batch_size: int = 4) -> dict:
     
+    """
+    Generate answers using hf pipeline wrapped in langchain.
+    Params:
+        top_k: num examples
+        schema: pydantic schema
+        prefix: question str
+        similarity_df: cosime similarity scores 
+        features_df: text passages
+        labels_df: answers
+        model_id: llm 
+        pipeline_kwargs: generation specs
+        batch_size: how many passages to process
+    Returns:
+        llm generated answers
+    """
     column_names = list(schema.__fields__.keys())
     # init model and tokenizer
     model = AutoModelForCausalLM.from_pretrained(model_id,
                                               torch_dtype=torch.float16,
-                                              device_map="auto",
-                                              cache_dir="/home/hice1/yyao386/scratch/huggingface/hub")
-    tokenizer = AutoTokenizer.from_pretrained(model_id,cache_dir="/home/hice1/yyao386/scratch/huggingface/hub")
-    hf_pipe = pipeline("text-generation", model=model, max_new_tokens=300, 
+                                              device_map="auto",)
+    tokenizer = AutoTokenizer.from_pretrained(model_id,)
+    hf_pipe = pipeline("text-generation", model=model, max_new_tokens=50, 
                        tokenizer=tokenizer, device_map="auto")
     langchain_pipe = HuggingFacePipeline(pipeline=hf_pipe, batch_size=batch_size, 
                                         pipeline_kwargs=pipeline_kwargs)
@@ -123,9 +152,9 @@ def langchain_fewshot_answers(top_k: int,
         uid = sub["uid"]
         question = sub["NarrativeCME"]
         examples = get_examples(uid, column_names, top_k, similarity_df, features_df, labels_df)
-        prompt_kwargs, parser = gen_prompt_kwargs(schema, prefix, examples)
+        prompt_kwargs, _ = gen_prompt_kwargs(schema, prefix, examples)
         prompt = FewShotPromptTemplate(**prompt_kwargs)
-        chain = prompt | langchain_pipe# | parser
+        chain = prompt | langchain_pipe
         answer = chain.invoke({"input": question})
         gen_answers[uid] = answer
     
